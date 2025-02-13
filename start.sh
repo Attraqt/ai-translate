@@ -1,11 +1,8 @@
 #!/bin/bash
 
 # 1. Download and install Python, pip, and pipenv
-if ! command -v python3 &> /dev/null; then
-		echo "Installing Python..."
-		sudo apt update
-		sudo apt install -y python3 python3-pip
-fi
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv
 
 # 2. Create and activate a virtual environment
 python3 -m venv venv
