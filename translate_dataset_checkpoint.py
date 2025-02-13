@@ -1,4 +1,5 @@
 import sys
+import os
 import torch
 import pandas as pd
 from transformers import MarianMTModel, MarianTokenizer, pipeline
@@ -6,8 +7,8 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 def translate_batch(examples, translator):
-		# This function assumes that all examples in the batch are English.
 		texts = examples["search_term"]
+		# Translate the batch (adjust max_length as needed)
 		translations = translator(texts, max_length=128, batch_size=len(texts))
 		translated_texts = [t["translation_text"] for t in translations]
 		return {"translated_search_term": translated_texts}
@@ -21,7 +22,8 @@ def main():
 		output_csv = sys.argv[2]
 		target_lang = sys.argv[3]  # e.g., 'de' for German
 
-		# Use a MarianMT model for English-to-target translation.
+		# For this example, we assume that rows with locale_language starting with "en" are English.
+		# We'll use a MarianMT model for English-to-target translation.
 		model_name = f"Helsinki-NLP/opus-mt-en-{target_lang}"
 		
 		print("Loading model and tokenizer...")
@@ -38,59 +40,60 @@ def main():
 		
 		translator = pipeline("translation", model=model, tokenizer=tokenizer, device=device)
 		
-		print("Loading dataset...")
-		# Load CSV as a dataset; note delimiter is a semicolon.
-		dataset = load_dataset("csv", data_files=input_csv, delimiter=";")
-		ds = dataset["train"]
+		print("Loading dataset from CSV...")
+		# Load CSV as a dataset (delimiter is semicolon). Use pandas engine with on_bad_lines skip if needed.
+		try:
+				dataset = load_dataset("csv", data_files=input_csv, delimiter=";")
+		except Exception as e:
+				print("Error loading dataset with load_dataset:", e)
+				sys.exit(1)
 		
-		# Filter to keep only rows with locale_language starting with "en"
+		ds = dataset["train"]
+		# Filter: Keep only rows with locale_language starting with "en"
 		ds = ds.filter(lambda example: example["locale_language"].lower().startswith("en"))
 		
 		total_rows = ds.num_rows
 		print(f"Total English rows to translate: {total_rows}")
 		
-		batch_size = 32  # adjust as needed
-		checkpoint_interval = total_rows / 10  # save every 10%
+		# Set up checkpointing: we want to save every 10% of progress.
+		checkpoint_interval = total_rows / 10
 		next_checkpoint = checkpoint_interval
 		processed = 0
 		results_list = []
+		chunk_size = 32  # Adjust as needed
 		
-		# Prepare output file by removing it if it exists.
-		try:
-				open(output_csv, "w").close()
-		except Exception as e:
-				print(f"Error preparing output file: {e}")
-				sys.exit(1)
+		# Remove output file if it exists.
+		if os.path.exists(output_csv):
+				os.remove(output_csv)
 		
-		# Iterate over the dataset in batches.
-		print("Translating dataset in batches and saving every 10% progress...")
-		for start in tqdm(range(0, total_rows, batch_size), desc="Processing batches"):
-				end = min(start + batch_size, total_rows)
+		# Process the dataset in chunks.
+		print("Translating dataset in batches with checkpointing...")
+		for start in tqdm(range(0, total_rows, chunk_size), desc="Processing batches"):
+				end = min(start + chunk_size, total_rows)
 				batch = ds.select(range(start, end))
-				# Process translation on this batch.
 				processed_batch = batch.map(lambda examples: translate_batch(examples, translator),
-																		batched=True, batch_size=batch_size, load_from_cache_file=False)
-				# Convert batch to pandas DataFrame.
+																		batched=True, batch_size=chunk_size, load_from_cache_file=False)
 				df_chunk = processed_batch.to_pandas()[["translated_search_term", "product", "search_frequency"]]
 				df_chunk["target_locale"] = target_lang
 				results_list.append(df_chunk)
 				
 				processed += (end - start)
-				# Check if we've passed the next checkpoint.
+				
+				# When we reach a checkpoint, save accumulated results.
 				if processed >= next_checkpoint:
-						# Concatenate results and append to CSV.
 						df_save = pd.concat(results_list, ignore_index=True)
-						# Write header only if file is empty.
-						header = (processed - (end - start)) == 0  # if first checkpoint
-						df_save.to_csv(output_csv, sep=";", index=False, mode="a", header=header)
-						results_list = []  # clear stored chunks
-						print(f"Progress saved: {processed/total_rows*100:.1f}%")
+						# Write header only if file does not exist yet.
+						header = not os.path.exists(output_csv)
+						df_save.to_csv(output_csv, sep=";", mode="a", index=False, header=header)
+						results_list = []  # Clear the accumulator.
+						print(f"Checkpoint saved: {processed/total_rows*100:.1f}% completed.")
 						next_checkpoint += checkpoint_interval
 		
-		# After finishing, if any remaining results, append them.
+		# Save any remaining results.
 		if results_list:
 				df_save = pd.concat(results_list, ignore_index=True)
-				df_save.to_csv(output_csv, sep=";", index=False, mode="a", header=False)
+				header = not os.path.exists(output_csv)
+				df_save.to_csv(output_csv, sep=";", mode="a", index=False, header=header)
 		
 		print("Translation complete. Output written to", output_csv)
 

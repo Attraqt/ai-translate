@@ -26,3 +26,15 @@ output_file="output-$(date +%Y%m%d%H%M%S).csv"
 python translate-datasets.py "$filename" "$output_file" "$locale"
 
 echo "Translation complete. Output saved to $output_file"
+
+# 7. Zip the output file
+zip "${output_file}.zip" "$output_file"
+echo "Output file zipped as ${output_file}.zip"
+
+# 8. Start a simple HTTP server for download
+python3 -m http.server 8000 &
+server_pid=$!
+echo "Download the output file from: http://$(hostname -I | awk '{print $1}'):8000/${output_file}.zip"
+
+# 9. Instructions for stopping the server
+echo "To stop the server, run: kill $server_pid"
